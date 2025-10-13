@@ -17,19 +17,20 @@ int main(int argc, const char** argv)
     }
     
     int status;
-    addrinfo hints{};
-    addrinfo* res;
-    addrinfo* p;
+    addrinfo hints{}; // hints for the getaddrinfo() func
+    addrinfo* res; // resulting linked-list of the getaddrinfo()
+    addrinfo* p; // pointer to iterate over the above linked-list
 
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = AF_UNSPEC; // don't care if it is iPv4 or iPv6
+    hints.ai_socktype = SOCK_STREAM; // TCP stream socket
+    hints.ai_flags = AI_PASSIVE; // fill IP for me
 
     if ((status = getaddrinfo(argv[1], "3490", &hints, &res)) != 0)
     {
         std::println("gai error: {}", gai_strerror(status));
     }
 
+    // Print each addresses of the host given in the command line
     for(p = res; p != nullptr; p = p->ai_next) 
     {
         const void* addr = nullptr;
@@ -53,6 +54,8 @@ int main(int argc, const char** argv)
         }
 
         std::array<char, INET6_ADDRSTRLEN> ipstr{};  // big enough for v4 and v6
+
+        // converts the IP address to a string
         if (!inet_ntop(p->ai_family, addr, ipstr.data(), ipstr.size())) 
         {
             // handle error if you want (errno has the reason)
@@ -61,6 +64,15 @@ int main(int argc, const char** argv)
 
         std::println("  {}: {}", ipver, ipstr.data());
     }
+
+    int sockfd; // Socket file descriptor
+    if ((sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1)
+    {
+        std::println("Socket error");
+    }
+
+    bind(sockfd, res->ai_addr, res->ai_addrlen);
+
 
     freeaddrinfo(res);
 }
