@@ -76,16 +76,19 @@ int main(int argc, char** argv)
 
     std::unordered_map<int, std::string> outbuf; // fd -> pending bytes
 
-    // helper to add new clients to the pfds
+    // helper to add new clients to the pfds vec and outbuf map
     auto add_client = [&](int cfd)
     {
         set_nonblock(cfd);
         pfds.push_back({cfd, POLLIN, 0});
         outbuf.try_emplace(cfd);
     };
-    auto remove_client = [&](size_t idx) {
+
+    // helperto remove clients from the pfds and outbuf map
+    auto remove_client = [&](size_t idx) 
+    {
         int cfd = pfds[idx].fd;
-        ::close(cfd);
+        close(cfd);
         outbuf.erase(cfd);
         pfds[idx] = pfds.back();
         pfds.pop_back();
@@ -94,60 +97,93 @@ int main(int argc, char** argv)
     std::cout << "listening on port " << argv[1] << " ...\n";
     char buf[8192];
 
-    for (;;) {
-        if (::poll(pfds.data(), pfds.size(), -1) < 0) {
-            if (errno == EINTR) continue;
+    while (true) 
+    {
+        if (poll(pfds.data(), pfds.size(), -1) < 0) 
+        {
+            if (errno == EINTR) 
+                continue;
             die("poll");
         }
 
         // 1) Accept new clients
-        if (pfds[0].revents & POLLIN) {
-            for (;;) {
-                sockaddr_storage ss{}; socklen_t slen = sizeof(ss);
-                int cfd = ::accept(lfd, reinterpret_cast<sockaddr*>(&ss), &slen);
-                if (cfd == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                    std::perror("accept"); break;
+        if (pfds[0].revents & POLLIN) 
+        {
+            while (true) 
+            {
+                sockaddr_storage ss{}; 
+                socklen_t slen = sizeof(ss);
+                int cfd = accept(lfd, reinterpret_cast<sockaddr*>(&ss), &slen);
+                if (cfd == -1) 
+                {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) 
+                        break;
+                    std::perror("accept"); 
+                    break;
                 }
                 add_client(cfd);
             }
         }
 
         // 2) Service clients (iterate backward so removal is O(1))
-        for (size_t i = pfds.size(); i-- > 1;) {
+        for (size_t i = pfds.size(); i > 1; --i) 
+        {
             auto& p = pfds[i];
-            if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) { remove_client(i); continue; }
+            if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) 
+            { 
+                remove_client(i); 
+                continue; 
+            }
 
-            // Readable: receive and broadcast
-            if (p.revents & POLLIN) {
-                for (;;) {
-                    ssize_t n = ::recv(p.fd, buf, sizeof(buf), 0);
-                    if (n > 0) {
-                        // Broadcast to others: append to their out buffers
-                        for (size_t j = 1; j < pfds.size(); ++j) {
+            // readable: receive and broadcast
+            if (p.revents & POLLIN) 
+            {
+                while (true) 
+                {
+                    ssize_t n = recv(p.fd, buf, sizeof(buf), 0);
+                    if (n > 0) 
+                    {
+                        // broadcast to others: append to their out buffers
+                        for (size_t j = 1; j < pfds.size(); ++j) 
+                        {
                             int ofd = pfds[j].fd;
-                            if (ofd == p.fd) continue;
+                            if (ofd == p.fd) 
+                                continue;
                             auto& q = outbuf[ofd];
                             q.append(buf, static_cast<size_t>(n));
                             pfds[j].events |= POLLOUT; // ask poll to notify when writable
                         }
-                    } else if (n == 0) { remove_client(i); break; } // peer closed
-                    else {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                        std::perror("recv"); remove_client(i); break;
+                    } 
+                    else if (n == 0) 
+                    { 
+                        remove_client(i); 
+                        break; 
+                    } // peer closed
+                    else 
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) 
+                            break;
+                        std::perror("recv"); remove_client(i); 
+                        break;
                     }
                 }
             }
 
-            // Writable: flush pending data
-            if ((p.revents & POLLOUT) && !outbuf[p.fd].empty()) {
+            // writable: flush pending data
+            if ((p.revents & POLLOUT) && !outbuf[p.fd].empty()) // if fd is writable and out buffer is not empty
+            {
                 std::string& q = outbuf[p.fd];
-                ssize_t m = ::send(p.fd, q.data(), q.size(), 0);
-                if (m > 0) {
+                ssize_t m = send(p.fd, q.data(), q.size(), 0);
+                if (m > 0) 
+                {
                     q.erase(0, static_cast<size_t>(m));
-                    if (q.empty()) p.events &= ~POLLOUT;
-                } else if (m < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                    std::perror("send"); remove_client(i);
+                    if (q.empty()) 
+                        p.events &= ~POLLOUT;
+                } 
+                else if (m < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) 
+                {
+                    std::perror("send"); 
+                    remove_client(i);
                 }
             }
         }
