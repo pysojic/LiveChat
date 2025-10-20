@@ -16,47 +16,69 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static void die(const char* msg) { std::perror(msg); std::exit(1); }
-
-static void set_nonblock(int fd) {
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl == -1 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) == -1) die("fcntl");
+// helper function to handle error messages
+static void die(const char* msg) 
+{ 
+    std::perror(msg); 
+    std::exit(1); 
 }
 
-int main(int argc, char** argv) {
+// helper to set a socket in non-blcoking mode
+static void set_nonblock(int fd) 
+{
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl == -1 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) == -1) 
+    die("fcntl");
+}
+
+int main(int argc, char** argv) 
+{
     if (argc != 2) { std::cerr << "usage: " << argv[0] << " <port>\n"; return 1; }
 
     std::signal(SIGPIPE, SIG_IGN); // portable way to avoid SIGPIPE on send()
 
-    addrinfo hints{}; hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM; hints.ai_flags = AI_PASSIVE;
-    addrinfo* res = nullptr;
-    if (int rc = getaddrinfo(nullptr, argv[1], &hints, &res); rc != 0) {
+    addrinfo hints{}; 
+    hints.ai_family = AF_UNSPEC; // doesn't matter if IPv4 or IPv6
+    hints.ai_socktype = SOCK_STREAM; // TCP
+    hints.ai_flags = AI_PASSIVE; // Give me the host IP
+
+    addrinfo* res = nullptr; // result of getaddrinfo
+    if (int rc = getaddrinfo(nullptr, argv[1], &hints, &res); rc != 0) 
+    {
         std::cerr << "getaddrinfo: " << gai_strerror(rc) << "\n"; return 1;
     }
 
     int lfd = -1;
-    for (addrinfo* p = res; p; p = p->ai_next) {
-        lfd = ::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (lfd == -1) continue;
+    for (addrinfo* p = res; p; p = p->ai_next) // iterates over the linked list of getaddrinfo
+    {
+        lfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (lfd == -1) 
+            continue;
         int yes = 1;
-        setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)); // re-bind the port quickly even if port is in TIME_WAIT state
 #ifdef SO_REUSEPORT
         setsockopt(lfd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 #endif
-        if (::bind(lfd, p->ai_addr, p->ai_addrlen) == 0) break;
-        ::close(lfd); lfd = -1;
+        if (bind(lfd, p->ai_addr, p->ai_addrlen) == 0) // if bind is successful, breaks out of the loop, else close the socket
+            break;
+        close(lfd); 
+        lfd = -1;
     }
     freeaddrinfo(res);
-    if (lfd == -1) die("bind");
-    if (::listen(lfd, SOMAXCONN) == -1) die("listen");
+    if (lfd == -1) 
+        die("bind"); // if bind was unsuccessful, shows error then terminates
+    if (listen(lfd, SOMAXCONN) == -1) // if listen returns an error, shows error then terminates
+        die("listen");
     set_nonblock(lfd);
 
-    std::vector<pollfd> pfds;
-    pfds.push_back({lfd, POLLIN, 0}); // index 0 = listening socket
+    std::vector<pollfd> pfds; // contains the different pollfd for each client state
+    pfds.push_back({lfd, POLLIN, 0}); // index 0 = listening socket, get notified when new connections are ready to be accepted
 
     std::unordered_map<int, std::string> outbuf; // fd -> pending bytes
 
-    auto add_client = [&](int cfd) {
+    // helper to add new clients to the pfds
+    auto add_client = [&](int cfd)
+    {
         set_nonblock(cfd);
         pfds.push_back({cfd, POLLIN, 0});
         outbuf.try_emplace(cfd);
